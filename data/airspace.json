@@ -1,0 +1,90 @@
+{
+  "zones": [
+    {
+      "id": "SG-CTR-01",
+      "name": "Changi Control Zone",
+      "type": "controlled",
+      "class": "C",
+      "geometry": {"center": [1.3644, 103.9915], "radius_km": 9.0},
+      "floor_m": 0,
+      "ceiling_m": 1500,
+      "max_drone_alt_m": 0,
+      "permission_required": true,
+      "permission_authority": "CAAS",
+      "notes": "Active international airport. No drone operations without explicit CAAS clearance."
+    },
+    {
+      "id": "SG-CTR-02",
+      "name": "Seletar Control Zone",
+      "type": "controlled",
+      "class": "D",
+      "geometry": {"center": [1.4169, 103.8682], "radius_km": 5.0},
+      "floor_m": 0,
+      "ceiling_m": 900,
+      "max_drone_alt_m": 0,
+      "permission_required": true,
+      "permission_authority": "CAAS",
+      "notes": "Aerodrome traffic zone. Permit mandatory."
+    },
+    {
+      "id": "SG-RST-11",
+      "name": "Jurong Island Restricted",
+      "type": "restricted",
+      "class": "R",
+      "geometry": {"center": [1.2667, 103.7000], "radius_km": 4.5},
+      "floor_m": 0,
+      "ceiling_m": 3000,
+      "max_drone_alt_m": 0,
+      "permission_required": true,
+      "permission_authority": "MINDEF",
+      "notes": "Critical petrochemical infrastructure. Restricted under security regulations."
+    },
+    {
+      "id": "SG-OPN-21",
+      "name": "Marina Recreational Open Area",
+      "type": "open",
+      "class": "G",
+      "geometry": {"center": [1.2806, 103.8636], "radius_km": 2.0},
+      "floor_m": 0,
+      "ceiling_m": 60,
+      "max_drone_alt_m": 60,
+      "permission_required": false,
+      "permission_authority": null,
+      "notes": "Recreational flying permitted up to 60m AGL during daylight."
+    },
+    {
+      "id": "SG-OPN-22",
+      "name": "Punggol Open Field",
+      "type": "open",
+      "class": "G",
+      "geometry": {"center": [1.4051, 103.9020], "radius_km": 1.5},
+      "floor_m": 0,
+      "ceiling_m": 60,
+      "max_drone_alt_m": 60,
+      "permission_required": false,
+      "permission_authority": null,
+      "notes": "Permitted up to 60m AGL. Avoid HDB rooftops."
+    },
+    {
+      "id": "SG-TMP-31",
+      "name": "F1 Circuit Temporary No-Fly",
+      "type": "temporary_restricted",
+      "class": "R",
+      "geometry": {"center": [1.2914, 103.8640], "radius_km": 3.0},
+      "floor_m": 0,
+      "ceiling_m": 5000,
+      "max_drone_alt_m": 0,
+      "permission_required": true,
+      "permission_authority": "CAAS",
+      "active_window": {"start": "2026-09-18T00:00:00Z", "end": "2026-09-21T23:59:59Z"},
+      "notes": "Temporary flight restriction during major event."
+    }
+  ],
+  "regulations": {
+    "max_alt_open_m": 60,
+    "daylight_only_open": true,
+    "min_distance_aerodrome_km": 5.0,
+    "vlos_required": true,
+    "max_weight_no_permit_kg": 7.0
+  }
+}
