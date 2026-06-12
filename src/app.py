@@ -1,7 +1,9 @@
-"""Streamlit UI for the Multimodal Field Report Generator.
+"""Streamlit UI for the Aviation MCP Server — Airspace Tools.
 
-Capture inputs (typed notes / voice transcript / photo OCR) -> generate a
-draft report -> edit it -> review citations -> export to PDF or DOCX.
+Three tabs:
+  - Zone Explorer      : browse all loaded airspace zones
+  - Constraint Lookup  : query constraints at a lat/lon point
+  - Route Feasibility  : run a full preflight check on a waypoint list
 
 Run:  streamlit run src/app.py
 """
@@ -13,92 +15,273 @@ from pathlib import Path
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.backend_client import generate_report
-from src.export import to_pdf, to_docx
 
-st.set_page_config(page_title="Field Report Generator", layout="wide")
+from src.data_layer import AirspaceDB
+from src.compute import query_constraints
+from validators import validate_coordinates, validate_altitude, validate_waypoints
+from workflows import run_preflight_check
 
-# A small amount of CSS - just spacing and a lighter caption colour.
+# --------------------------------------------------------------------------- #
+# Page config
+# --------------------------------------------------------------------------- #
+st.set_page_config(
+    page_title="Aviation MCP Server",
+    page_icon="✈",
+    layout="wide",
+)
+
 st.markdown("""
 <style>
-    .block-container { padding-top: 2.5rem; max-width: 1100px; }
-    .ref-box {
-        border: 1px solid #e0e0e0; border-radius: 6px;
-        padding: 10px 12px; margin-bottom: 8px; background: #fafafa;
+    .block-container { padding-top: 2rem; max-width: 1100px; }
+    .zone-badge {
+        display: inline-block;
+        padding: 2px 8px; border-radius: 4px;
+        font-size: 0.78rem; font-weight: 600; color: #fff;
     }
-    .ref-id { font-weight: 600; color: #1f6feb; }
-    .ref-src { color: #666; font-size: 0.85rem; }
-    .ref-snip { color: #333; font-size: 0.9rem; font-style: italic; margin-top: 4px; }
+    .badge-controlled   { background: #d62728; }
+    .badge-restricted   { background: #e6550d; }
+    .badge-open         { background: #2ca02c; }
+    .badge-temporary    { background: #9467bd; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Multimodal Field Report Generator")
-st.write("Capture site observations from text, voice, or photos and generate "
-         "a regulation-grounded draft report with source citations.")
+st.title("Aviation MCP Server")
+st.caption("Singapore drone airspace — zone data, constraint lookup, and route feasibility")
 st.divider()
 
-if "report" not in st.session_state:
-    st.session_state.report = None
+# --------------------------------------------------------------------------- #
+# Shared state: load DB once
+# --------------------------------------------------------------------------- #
+@st.cache_resource
+def load_db() -> AirspaceDB:
+    return AirspaceDB()
 
-# ---------------- Sidebar: capture inputs ---------------- #
-with st.sidebar:
-    st.header("1. Capture inputs")
-    notes = st.text_area("Typed notes", height=140,
-                         placeholder="e.g. Hairline crack on column B3, approx 200mm")
-    transcript = st.text_area("Voice transcript", height=100,
-                              placeholder="Whisper transcription output")
-    ocr_text = st.text_area("Photo OCR / vision text", height=100,
-                            placeholder="Text extracted from site photos")
-    if st.button("Generate draft", type="primary"):
-        with st.spinner("Retrieving standards and drafting report..."):
-            st.session_state.report = generate_report({
-                "notes": notes, "transcript": transcript, "ocr_text": ocr_text,
-            })
 
-report = st.session_state.report
-
-# ---------------- Empty state ---------------- #
-if not report:
-    st.subheader("How it works")
-    c1, c2, c3 = st.columns(3)
-    c1.markdown("**1. Capture**\n\nType notes, paste a voice transcript, or add OCR text from photos.")
-    c2.markdown("**2. Generate**\n\nEach section is drafted against retrieved regulatory standards.")
-    c3.markdown("**3. Verify & export**\n\nCheck the citations, edit inline, and export to PDF or DOCX.")
-    st.info("Enter observations in the sidebar and click **Generate draft** to start.")
+try:
+    db = load_db()
+except Exception as exc:
+    st.error(f"Failed to load airspace database: {exc}")
     st.stop()
 
-# ---------------- Edit + citations ---------------- #
-status = report.get("metadata", {}).get("status", "DRAFT")
-st.subheader("2. Edit draft")
-st.caption(f"Status: {status}")
+# --------------------------------------------------------------------------- #
+# Tabs
+# --------------------------------------------------------------------------- #
+tab_zones, tab_constraints, tab_route = st.tabs([
+    "Zone Explorer",
+    "Constraint Lookup",
+    "Route Feasibility Checker",
+])
 
-col_edit, col_cite = st.columns([3, 2], gap="large")
+# =========================================================================== #
+# TAB 1 — Zone Explorer
+# =========================================================================== #
+with tab_zones:
+    st.subheader("Airspace Zones")
+    st.write("All zones loaded from the airspace database.")
 
-with col_edit:
-    report["title"] = st.text_input("Report title", report.get("title", ""))
-    for i, sec in enumerate(report["sections"]):
-        sec["heading"] = st.text_input(f"Section {i+1} heading", sec["heading"], key=f"h{i}")
-        sec["body"] = st.text_area(f"Section {i+1} body", sec["body"], height=130, key=f"b{i}")
-        n = len(sec.get("citations", []))
-        st.caption(f"{n} source{'s' if n != 1 else ''} linked")
+    zones = db.all_zones()
 
-with col_cite:
-    st.markdown("**3. Citations / provenance**")
-    for ref in report.get("references", []):
-        st.markdown(f"""
-        <div class="ref-box">
-          <span class="ref-id">[{ref['id']}]</span>
-          <span class="ref-src">{ref['source']} &middot; chunk {ref['chunk_id']}</span>
-          <div class="ref-snip">"{ref.get('snippet','')}"</div>
-        </div>""", unsafe_allow_html=True)
-    st.caption("Every cited claim links back to a source chunk in the knowledge base.")
+    # Build display rows
+    rows = []
+    for z in zones:
+        rows.append({
+            "ID": z.id,
+            "Name": z.name,
+            "Type": z.raw.get("type", "—"),
+            "Max Altitude (m)": z.max_drone_alt_m,
+            "Permission Required": "Yes" if z.permission_required else "No",
+            "Authority": z.raw.get("permission_authority") or "—",
+            "Notes": z.raw.get("notes", ""),
+        })
 
-# ---------------- Export ---------------- #
-st.divider()
-st.subheader("4. Export")
-e1, e2, _ = st.columns([1, 1, 2])
-e1.download_button("Download PDF", data=to_pdf(report),
-                   file_name="field_report.pdf", mime="application/pdf")
-e2.download_button("Download DOCX", data=to_docx(report),
-                   file_name="field_report.docx",
-                   mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    import pandas as pd
+    df = pd.DataFrame(rows)
+
+    # Summary metrics
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Zones", len(zones))
+    m2.metric("Restricted / Controlled",
+              sum(1 for z in zones if z.permission_required))
+    m3.metric("Open (No Permit)", sum(1 for z in zones if not z.permission_required))
+
+    st.divider()
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Max Altitude (m)": st.column_config.NumberColumn(format="%d m"),
+            "Permission Required": st.column_config.TextColumn(),
+        },
+    )
+
+    with st.expander("Raw zone details"):
+        import json
+        for z in zones:
+            st.markdown(f"**{z.name}** (`{z.id}`)")
+            st.json(z.raw)
+
+# =========================================================================== #
+# TAB 2 — Constraint Lookup
+# =========================================================================== #
+with tab_constraints:
+    st.subheader("Constraint Lookup")
+    st.write("Enter a coordinate to see which airspace rules apply at that point.")
+
+    col_lat, col_lon = st.columns(2)
+    with col_lat:
+        lat_input = st.number_input(
+            "Latitude", value=1.2806, min_value=-90.0, max_value=90.0,
+            format="%.6f", step=0.0001,
+            help="Decimal degrees, e.g. 1.2806",
+        )
+    with col_lon:
+        lon_input = st.number_input(
+            "Longitude", value=103.8636, min_value=-180.0, max_value=180.0,
+            format="%.6f", step=0.0001,
+            help="Decimal degrees, e.g. 103.8636",
+        )
+
+    if st.button("Look up constraints", type="primary"):
+        try:
+            validate_coordinates(lat_input, lon_input)
+            result = query_constraints(db, (lat_input, lon_input))
+
+            st.divider()
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Max Altitude", f"{result['max_altitude_m']} m")
+            r2.metric("Controlled Airspace",
+                      "Yes" if result["in_controlled_airspace"] else "No")
+            r3.metric("Permission Required",
+                      "Yes" if result["permission_required"] else "No")
+
+            st.divider()
+            if result["permission_required"]:
+                authorities = result.get("permission_authorities", [])
+                st.error(
+                    f"Permission required from: **{', '.join(authorities) or 'unknown authority'}**"
+                )
+            else:
+                st.success("No permission required — open airspace at this point.")
+
+            st.info(f"**Summary:** {result['summary']}")
+
+            applicable = result.get("applicable_zones", [])
+            if applicable:
+                st.markdown(f"**Applicable zones ({len(applicable)}):**")
+                for z in applicable:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([2, 1, 2])
+                        c1.markdown(f"**{z['name']}** `{z['id']}`")
+                        c2.markdown(f"Type: `{z['type']}`")
+                        c3.markdown(f"Max: **{z['max_drone_alt_m']} m** · Permit: {'Yes' if z['permission_required'] else 'No'}")
+                        if z.get("notes"):
+                            st.caption(z["notes"])
+            else:
+                st.markdown("No specific zone — open airspace applies.")
+
+        except ValueError as exc:
+            st.error(f"Invalid input: {exc}")
+        except Exception as exc:
+            st.error(f"Lookup failed: {exc}")
+
+# =========================================================================== #
+# TAB 3 — Route Feasibility Checker
+# =========================================================================== #
+with tab_route:
+    st.subheader("Route Feasibility Checker")
+    st.write("Enter waypoints (one `lat, lon` pair per line) and a flight altitude.")
+
+    col_wp, col_alt = st.columns([3, 1])
+
+    with col_wp:
+        waypoints_raw = st.text_area(
+            "Waypoints (lat, lon — one per line)",
+            value="1.2806, 103.8636\n1.2810, 103.8640",
+            height=160,
+            help="Example:\n1.2806, 103.8636\n1.3644, 103.9915",
+        )
+
+    with col_alt:
+        altitude_input = st.number_input(
+            "Altitude (m AGL)",
+            value=50,
+            min_value=1,
+            max_value=5000,
+            step=5,
+            help="Altitude above ground level in metres",
+        )
+
+    if st.button("Check route", type="primary"):
+        # Parse waypoints safely
+        waypoints: list[list[float]] = []
+        parse_error: str | None = None
+
+        for i, line in enumerate(waypoints_raw.strip().splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            if len(parts) != 2:
+                parse_error = (
+                    f"Line {i} — expected 'lat, lon' but got: '{line}'"
+                )
+                break
+            try:
+                waypoints.append([float(parts[0].strip()), float(parts[1].strip())])
+            except ValueError:
+                parse_error = f"Line {i} — could not parse numbers from: '{line}'"
+                break
+
+        if parse_error:
+            st.error(f"Waypoint parse error: {parse_error}")
+        else:
+            try:
+                validate_waypoints(waypoints)
+                validate_altitude(altitude_input)
+                result = run_preflight_check(db, waypoints, altitude_input)
+
+                st.divider()
+                status = result["status"]
+
+                # Top-level verdict
+                if status == "approved":
+                    st.success(f"Route **APPROVED** — {result['recommendation']}")
+                else:
+                    st.error(f"Route **REJECTED** — {result['recommendation']}")
+
+                # Metrics row
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Status", status.upper())
+                m2.metric("Altitude", f"{result['checked_altitude_m']} m AGL")
+                m3.metric("Total Distance", f"{result['total_distance_km']} km")
+                m4.metric("Violations", len(result["violations"]))
+
+                # Violations detail
+                violations = result["violations"]
+                if violations:
+                    st.divider()
+                    st.markdown(f"**Violations ({len(violations)}):**")
+                    for v in violations:
+                        with st.container(border=True):
+                            st.markdown(f"Reason: {v['reason']}")
+                            st.caption(
+                                f"At point: {v['at_point']}  ·  "
+                                f"Leg: {v['leg'][0]} → {v['leg'][1]}  ·  "
+                                f"Zones: {', '.join(v['zones'])}"
+                            )
+
+                # Per-waypoint constraints expander
+                wc = result.get("waypoint_constraints", [])
+                if wc:
+                    with st.expander("Per-waypoint constraint details"):
+                        for idx, c in enumerate(wc):
+                            st.markdown(
+                                f"**Waypoint {idx + 1}** "
+                                f"`{c['point']}`  —  {c['summary']}"
+                            )
+
+            except ValueError as exc:
+                st.error(f"Validation error: {exc}")
+            except Exception as exc:
+                st.error(f"Route check failed: {exc}")
